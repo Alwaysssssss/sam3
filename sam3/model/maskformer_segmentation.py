@@ -18,6 +18,7 @@ class LinearPresenceHead(nn.Sequential):
         # a hack to make `LinearPresenceHead` compatible with old checkpoints
         super().__init__(nn.Identity(), nn.Identity(), nn.Linear(d_model, 1))
 
+    # pyrefly: ignore [bad-override]
     def forward(self, hs, prompt, prompt_mask):
         return super().forward(hs)
 
@@ -107,6 +108,12 @@ class SegmentationHead(nn.Module):
         image_ids,
         encoder_hidden_states,
     ) -> torch.Tensor:
+        # Unwrap NestedTensors to plain tensors if needed (multiplex path)
+        from sam3.model.data_misc import NestedTensor
+
+        def _unwrap(x):
+            return x.tensors if isinstance(x, NestedTensor) else x
+
         feature_device = backbone_feats[0].device  # features could be on CPU
         model_device = self.device
         image_ids_ = image_ids.to(feature_device)
@@ -116,10 +123,14 @@ class SegmentationHead(nn.Module):
                 backbone_visual_feats = []
                 for feat in backbone_feats:
                     # Copy the img features per query (pixel decoder won't share img feats)
-                    backbone_visual_feats.append(feat[image_ids_, ...].to(model_device))
+                    backbone_visual_feats.append(
+                        _unwrap(feat)[image_ids_, ...].to(model_device)
+                    )
             else:
                 # Bs=1, we rely on broadcasting for query-based processing
-                backbone_visual_feats = [bb_feat.clone() for bb_feat in backbone_feats]
+                backbone_visual_feats = [
+                    _unwrap(bb_feat).clone() for bb_feat in backbone_feats
+                ]
             # Extract visual embeddings
             encoder_hidden_states = encoder_hidden_states.permute(1, 2, 0)
             spatial_dim = math.prod(backbone_feats[-1].shape[-2:])
@@ -135,7 +146,7 @@ class SegmentationHead(nn.Module):
             else:
                 pixel_embed = self.pixel_decoder(backbone_visual_feats)
         else:
-            backbone_feats = [x.to(model_device) for x in backbone_feats]
+            backbone_feats = [_unwrap(x).to(model_device) for x in backbone_feats]
             pixel_embed = self.pixel_decoder(backbone_feats)
             if pixel_embed.shape[0] == 1:
                 # For batch_size=1 training, we can avoid the indexing to save memory
@@ -269,6 +280,7 @@ class UniversalSegmentationHead(SegmentationHead):
             self.pixel_decoder.out_dim, self.d_model, kernel_size=1
         )
 
+    # pyrefly: ignore [bad-override]
     def forward(
         self,
         backbone_feats: List[torch.Tensor],
@@ -294,6 +306,7 @@ class UniversalSegmentationHead(SegmentationHead):
 
         presence_logit = None
         if self.presence_head is not None:
+            # pyrefly: ignore [missing-attribute]
             pooled_enc = encoder_hidden_states.mean(0)
             presence_logit = (
                 self.presence_head(
